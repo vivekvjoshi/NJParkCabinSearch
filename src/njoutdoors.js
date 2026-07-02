@@ -7,8 +7,13 @@ const path = require('path');
 
 // On Netlify/AWS Lambda there is no installed browser and no writable project dir:
 // use @sparticuz/chromium with playwright-core, and cache catalogs under /tmp.
+// Netlify's Next runtime hides the AWS_*/LAMBDA_* env vars from user code, so also
+// accept an explicit APP_SERVERLESS env var and the /var/task dir Lambda always has.
 const IS_SERVERLESS = Boolean(
-  process.env.LAMBDA_TASK_ROOT || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY
+  process.env.LAMBDA_TASK_ROOT ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.APP_SERVERLESS ||
+    (process.platform === 'linux' && fs.existsSync('/var/task'))
 );
 const USE_LAMBDA_CHROMIUM = IS_SERVERLESS && process.platform === 'linux';
 
