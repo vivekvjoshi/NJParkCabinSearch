@@ -130,7 +130,11 @@ async function launchBrowser() {
   if (USE_LAMBDA_CHROMIUM) {
     // chromium-min ships no browser binary (keeps the function bundle tiny);
     // the browser pack is downloaded to /tmp on first use and reused while warm
-    const sparticuz = require('@sparticuz/chromium-min');
+    let sparticuz = require('@sparticuz/chromium-min');
+    // bundler interop: the module may arrive as { default: {...} }
+    if (sparticuz && typeof sparticuz.executablePath !== 'function' && sparticuz.default) {
+      sparticuz = sparticuz.default;
+    }
     const { chromium } = require('playwright-core');
     const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
     const packUrl =
