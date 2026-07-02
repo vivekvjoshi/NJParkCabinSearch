@@ -1,4 +1,4 @@
-# NJ Site Finder
+# NJ Park Site Finder
 
 Search all 18 New Jersey state parks on njportal.com for available campsites, cabins,
 lean-tos and shelters in one shot — with filters, a weekend-recommendation mode, and
@@ -33,6 +33,36 @@ OpenAI-compatible API into structured filters, which then drive the normal live 
   `GET /api/recommend` (SSE, grades every weekend of a month), `POST /api/nl`.
 - `public/` — vanilla HTML/CSS/JS frontend, Kayak-inspired design. Weekend finder is the
   default mode and **Cabin is the default site type**.
+
+## Deploy to Netlify
+
+The repo doubles as a Netlify site: `public/` is served statically and the API lives in
+`netlify/functions/` (`/api/meta`, `/api/park`, `/api/nl`). On Netlify the frontend detects
+serverless mode (`meta.serverless`) and fans out one fetch per park instead of using SSE;
+scraping runs on `playwright-core` + `@sparticuz/chromium` inside the function.
+
+```bash
+npm install -g netlify-cli
+netlify login
+netlify init      # or: netlify deploy --prod
+```
+
+Then in the Netlify dashboard (Site configuration → Environment variables) set:
+
+- `NVIDIA_API_KEY` — enables natural-language search (optional)
+- `CHROMIUM_PACK_URL` — optional; URL of a `@sparticuz/chromium` release pack
+  (e.g. `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.arm64.tar`
+  — match your function architecture). Set this if a deploy fails on function bundle size:
+  the browser is then downloaded at runtime instead of being shipped in the zip.
+
+Notes for the serverless deployment:
+
+- Each `/api/park` call loads one park and must finish inside the function time limit
+  (10s default, raise to 26s in Site configuration → Functions if searches time out).
+- Catalog caches live in `/tmp` and only survive while the function stays warm, so
+  cold requests re-scrape the park page (adds ~1s).
+
+## Disclaimer
 
 Availability data is scraped live — always confirm on the official booking page.
 Peak season (mid-June–Labor Day): cabins/lean-tos/shelters can only be booked 7 or 14 nights

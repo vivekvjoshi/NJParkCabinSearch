@@ -8,7 +8,9 @@
     "start": "node src/server.js"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "express": "^4.19.2",
-    "playwright": "^1.45.0"
+    "playwright": "^1.45.0",
+    "playwright-core": "^1.61.1"
   }
 }

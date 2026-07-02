@@ -1,0 +1,8 @@
+[build]
+  publish = "public"
+
+[functions]
+  node_bundler = "esbuild"
+  # copy these packages whole into the function bundle — playwright's internals
+  # use dynamic requires that esbuild can't statically trace
+  external_node_modules = ["playwright", "playwright-core", "@sparticuz/chromium"]

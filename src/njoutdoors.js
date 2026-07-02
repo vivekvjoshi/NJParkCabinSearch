@@ -4,7 +4,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
+
+// On Netlify/AWS Lambda there is no installed browser and no writable project dir:
+// use @sparticuz/chromium with playwright-core, and cache catalogs under /tmp.
+const IS_SERVERLESS = Boolean(
+  process.env.LAMBDA_TASK_ROOT || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY
+);
+const USE_LAMBDA_CHROMIUM = IS_SERVERLESS && process.platform === 'linux';
 
 const BASE = 'https://www.njportal.com';
 const UA =
@@ -64,7 +70,9 @@ const FEATURES = {
 const SHOWER_FEATURE_ID = 14;
 const MIN_STAY_TYPE_IDS = [1, 2, 3]; // Cabin, Lean-To, Shelter: peak-season fixed-arrival 7/14-night rule
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+const DATA_DIR = IS_SERVERLESS
+  ? path.join('/tmp', 'njdata')
+  : path.join(__dirname, '..', 'data');
 const CATALOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ---------- date helpers (all pure string math on YYYY-MM-DD, no TZ surprises) ----------
@@ -111,10 +119,26 @@ function weekendsInMonth(month, arrivalDow) {
 
 let browserPromise = null;
 
-function getBrowser() {
-  if (!browserPromise) {
-    browserPromise = chromium.launch({ headless: true });
+async function launchBrowser() {
+  if (USE_LAMBDA_CHROMIUM) {
+    const sparticuz = require('@sparticuz/chromium');
+    const { chromium } = require('playwright-core');
+    // CHROMIUM_PACK_URL lets deploys stay under bundle-size limits by fetching
+    // the browser at runtime instead of shipping it in the function zip.
+    const executablePath = await sparticuz.executablePath(process.env.CHROMIUM_PACK_URL || undefined);
+    return chromium.launch({ headless: true, args: sparticuz.args, executablePath });
   }
+  const { chromium } = require('playwright');
+  return chromium.launch({ headless: true });
+}
+
+async function getBrowser() {
+  if (browserPromise) {
+    const b = await browserPromise.catch(() => null);
+    if (b && b.isConnected()) return b;
+    browserPromise = null; // stale after a lambda freeze/crash — relaunch
+  }
+  browserPromise = launchBrowser();
   return browserPromise;
 }
 
@@ -134,7 +158,14 @@ async function openParkPage(locationId) {
   const browser = await getBrowser();
   const context = await browser.newContext({ userAgent: UA });
   const page = await context.newPage();
-  await page.goto(detailsUrl(locationId), { waitUntil: 'networkidle', timeout: 90000 });
+  if (IS_SERVERLESS) {
+    // function invocations have tight time limits — don't wait for networkidle,
+    // just for the server-rendered verification token to be present
+    await page.goto(detailsUrl(locationId), { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await page.waitForSelector('input[name="__RequestVerificationToken"]', { timeout: 10000 });
+  } else {
+    await page.goto(detailsUrl(locationId), { waitUntil: 'networkidle', timeout: 90000 });
+  }
   return { context, page };
 }
 
@@ -197,8 +228,12 @@ async function scrapeCatalog(page, locationId) {
   });
 
   const catalog = { locationId, fetchedAt: Date.now(), ...scraped };
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(catalogPath(locationId), JSON.stringify(catalog, null, 2));
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(catalogPath(locationId), JSON.stringify(catalog, null, 2));
+  } catch {
+    /* read-only or ephemeral filesystem — cache is best-effort */
+  }
   return catalog;
 }
 

@@ -220,9 +220,64 @@
     </div>`;
   }
 
+  // ----- shared result plumbing -----
+
+  const parkName = (id) => (state.meta.parks.find((p) => p.id === id) || {}).name || `Park ${id}`;
+  const bookUrlFor = (id) => `https://www.njportal.com/DEP/NJOutdoors/Park/Details?locationId=${id}`;
+
+  function summarizeDateSearch(availableCount, parksWithSites, elapsedMs) {
+    $('#progressFill').style.width = '100%';
+    $('#statusLine').textContent = `Done in ${(elapsedMs / 1000).toFixed(0)}s.`;
+    const date = $('#dateInput').value;
+    const nights = $('#nightsInput').value;
+    if (availableCount > 0) {
+      $('#summary').innerHTML = `<div class="banner banner-summary">✅ ${plural(availableCount, 'site')} available across ${plural(parksWithSites, 'park')} for ${fmtDate(date)}, ${plural(+nights, 'night')}.</div>`;
+    } else {
+      $('#summary').innerHTML = `<div class="banner banner-error">${emptyExplanation('No available sites found for these dates and filters.')}</div>`;
+    }
+    finishSearch();
+  }
+
   // ----- specific-date search -----
 
   function runDateSearch() {
+    if (state.meta.serverless) return runDateSearchServerless();
+    runDateSearchSSE();
+  }
+
+  async function runDateSearchServerless() {
+    if (!beginSearch()) return;
+    const parks = [...state.parks];
+    const base = commonQuery();
+    base.set('mode', 'search');
+    base.set('date', $('#dateInput').value);
+    base.set('nights', $('#nightsInput').value);
+    base.set('minPeople', $('#minPeopleD').value || '0');
+
+    const results = [];
+    let availableCount = 0;
+    let parksWithSites = 0;
+    const started = Date.now();
+    for (let i = 0; i < parks.length; i++) {
+      const id = parks[i];
+      $('#progressFill').style.width = `${Math.round((i / parks.length) * 100)}%`;
+      $('#statusLine').textContent = `Checking ${parkName(id)}… (${i + 1} of ${parks.length} parks)`;
+      base.set('park', String(id));
+      let r;
+      try {
+        r = await (await fetch(`/api/park?${base}`)).json();
+      } catch (err) {
+        r = { locationId: id, park: parkName(id), bookUrl: bookUrlFor(id), error: String(err.message || err), sites: [], totalMatching: 0 };
+      }
+      results.push(r);
+      availableCount += (r.sites || []).length;
+      if ((r.sites || []).length) parksWithSites++;
+      renderDateResults(results);
+    }
+    summarizeDateSearch(availableCount, parksWithSites, Date.now() - started);
+  }
+
+  function runDateSearchSSE() {
     if (!beginSearch()) return;
     const q = commonQuery();
     q.set('date', $('#dateInput').value);
@@ -242,16 +297,7 @@
 
     es.addEventListener('done', (e) => {
       const d = JSON.parse(e.data);
-      $('#progressFill').style.width = '100%';
-      $('#statusLine').textContent = `Done in ${(d.elapsedMs / 1000).toFixed(0)}s.`;
-      const date = $('#dateInput').value;
-      const nights = $('#nightsInput').value;
-      if (d.availableCount > 0) {
-        $('#summary').innerHTML = `<div class="banner banner-summary">✅ ${plural(d.availableCount, 'site')} available across ${plural(d.parksWithSites, 'park')} for ${fmtDate(date)}, ${plural(+nights, 'night')}.</div>`;
-      } else {
-        $('#summary').innerHTML = `<div class="banner banner-error">${emptyExplanation('No available sites found for these dates and filters.')}</div>`;
-      }
-      finishSearch();
+      summarizeDateSearch(d.availableCount, d.parksWithSites, d.elapsedMs);
     });
   }
 
@@ -282,6 +328,74 @@
   // ----- weekend recommender -----
 
   function runWeekendSearch() {
+    if (state.meta.serverless) return runWeekendSearchServerless();
+    runWeekendSearchSSE();
+  }
+
+  // all candidate weekends of a month for an arrival weekday, checkout Sunday
+  function weekendTemplates(month, arrivalDow) {
+    const nights = { 4: 3, 5: 2, 6: 1 }[arrivalDow];
+    const [y, m] = month.split('-').map(Number);
+    const templates = [];
+    for (let day = 1; day <= 31; day++) {
+      const dt = new Date(Date.UTC(y, m - 1, day));
+      if (dt.getUTCMonth() !== m - 1) break;
+      if (dt.getUTCDay() !== arrivalDow) continue;
+      const iso = dt.toISOString().slice(0, 10);
+      if (iso < state.meta.today) continue;
+      const co = new Date(Date.UTC(y, m - 1, day + nights));
+      templates.push({ arrival: iso, checkout: co.toISOString().slice(0, 10), nights });
+    }
+    return templates;
+  }
+
+  async function runWeekendSearchServerless() {
+    if (!beginSearch()) return;
+    const parks = [...state.parks];
+    const month = $('#monthSelect').value;
+    const arrival = parseInt($('#weekendStyle').value, 10);
+    const base = commonQuery();
+    base.set('mode', 'recommend');
+    base.set('month', month);
+    base.set('arrival', String(arrival));
+    base.set('minPeople', $('#minPeopleW').value || '0');
+
+    const merged = new Map(
+      weekendTemplates(month, arrival).map((w) => [w.arrival, { ...w, totalSites: 0, parks: [] }])
+    );
+    const started = Date.now();
+    const notes = [];
+    for (let i = 0; i < parks.length; i++) {
+      const id = parks[i];
+      $('#progressFill').style.width = `${Math.round((i / parks.length) * 100)}%`;
+      $('#statusLine').textContent = `Checking ${parkName(id)}… (${i + 1} of ${parks.length} parks)`;
+      base.set('park', String(id));
+      try {
+        const r = await (await fetch(`/api/park?${base}`)).json();
+        if (r.error) throw new Error(r.error);
+        let parkTotal = 0;
+        for (const [iso, w] of Object.entries(r.weekends || {})) {
+          const bucket = merged.get(iso);
+          if (!bucket || !w.sites.length) continue;
+          bucket.totalSites += w.sites.length;
+          bucket.parks.push({ locationId: id, park: r.park, bookUrl: r.bookUrl, count: w.sites.length, sites: w.sites });
+          parkTotal += w.sites.length;
+        }
+        notes.push(`${r.park}: ${parkTotal}`);
+        $('#statusLine').textContent = `Latest — ${notes.slice(-3).join(' · ')} site-weekends`;
+      } catch (err) {
+        notes.push(`${parkName(id)}: error`);
+      }
+    }
+    const weekends = [...merged.values()].sort((a, b) => a.arrival.localeCompare(b.arrival));
+    for (const w of weekends) w.parks.sort((a, b) => b.count - a.count);
+    $('#progressFill').style.width = '100%';
+    $('#statusLine').textContent = `Done in ${((Date.now() - started) / 1000).toFixed(0)}s.`;
+    renderWeekendResults(weekends);
+    finishSearch();
+  }
+
+  function runWeekendSearchSSE() {
     if (!beginSearch()) return;
     const q = commonQuery();
     q.set('month', $('#monthSelect').value);
