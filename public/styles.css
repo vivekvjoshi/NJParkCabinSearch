@@ -1,10 +1,10 @@
-/* NJ Site Finder — Kayak-inspired design system
-   White canvas, near-black type, signature orange CTA, segmented search bar,
+/* NJ Park Site Finder — Kayak-inspired design system
+   White canvas, near-black type, forest-green CTA, segmented search bar,
    chip filters, card results. CTA color is themeable via --cta / --cta-dark. */
 
 :root {
-  --cta: #ff690f;        /* kayak orange */
-  --cta-dark: #e55a00;
+  --cta: #178a4c;        /* forest green */
+  --cta-dark: #0f6d3a;
   --ink: #1a1a1a;
   --ink-soft: #545860;
   --ink-faint: #878c94;
