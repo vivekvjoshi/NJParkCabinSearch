@@ -1,21 +1,12 @@
-// NJ Outdoors (njportal.com) scraper library for NJ Site Finder.
-// All availability data comes from POST /DEP/NJOutdoors/Park/ListSiteAvailabilityJson,
-// called from inside a loaded park Details page so session cookies apply.
+// NJ Outdoors (njportal.com) scraper library for NJ Park Site Finder.
+//
+// Pure HTTP — no browser. A GET of the park Details page yields the session
+// cookies, the ASP.NET anti-forgery token, and the HTML we parse for the
+// per-site catalog (toilets/area/access). Availability then comes from the
+// site's own POST /DEP/NJOutdoors/Park/ListSiteAvailabilityJson endpoint.
 
 const fs = require('fs');
 const path = require('path');
-
-// On Netlify/AWS Lambda there is no installed browser and no writable project dir:
-// use @sparticuz/chromium with playwright-core, and cache catalogs under /tmp.
-// Netlify's Next runtime hides the AWS_*/LAMBDA_* env vars from user code, so also
-// accept an explicit APP_SERVERLESS env var and the /var/task dir Lambda always has.
-const IS_SERVERLESS = Boolean(
-  process.env.LAMBDA_TASK_ROOT ||
-    process.env.AWS_LAMBDA_FUNCTION_NAME ||
-    process.env.APP_SERVERLESS ||
-    (process.platform === 'linux' && fs.existsSync('/var/task'))
-);
-const USE_LAMBDA_CHROMIUM = IS_SERVERLESS && process.platform === 'linux';
 
 const BASE = 'https://www.njportal.com';
 const UA =
@@ -75,11 +66,14 @@ const FEATURES = {
 const SHOWER_FEATURE_ID = 14;
 const MIN_STAY_TYPE_IDS = [1, 2, 3]; // Cabin, Lean-To, Shelter: peak-season fixed-arrival 7/14-night rule
 
-// cwd, not __dirname: this file gets bundled into .next/ by the Next build,
-// but the process always runs from the project root
-const DATA_DIR = IS_SERVERLESS
-  ? path.join('/tmp', 'njdata')
-  : path.join(process.cwd(), 'data');
+// Serverless hosts have no writable project dir — cache under /tmp there.
+const IS_SERVERLESS = Boolean(
+  process.env.LAMBDA_TASK_ROOT ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.APP_SERVERLESS ||
+    (process.platform === 'linux' && fs.existsSync('/var/task'))
+);
+const DATA_DIR = IS_SERVERLESS ? path.join('/tmp', 'njdata') : path.join(process.cwd(), 'data');
 const CATALOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ---------- date helpers (all pure string math on YYYY-MM-DD, no TZ surprises) ----------
@@ -122,94 +116,74 @@ function weekendsInMonth(month, arrivalDow) {
   return weekends;
 }
 
-// ---------- browser / session ----------
-
-let browserPromise = null;
-
-// @sparticuz/chromium-min is ESM-only with a class default export; depending on
-// which bundler/interop touched it, require() may hand back the namespace, the
-// class, or a double-wrapped default. Walk the candidates for the real one.
-function resolveSparticuz() {
-  const m = require('@sparticuz/chromium-min');
-  for (const c of [m, m && m.default, m && m.default && m.default.default]) {
-    if (c && typeof c.executablePath === 'function') return c;
-  }
-  throw new Error(
-    `chromium-min module shape unrecognized: keys=${JSON.stringify(Object.keys(m || {}))}`
-  );
-}
-
-async function launchLambdaChromium() {
-  // chromium-min ships no browser binary (keeps the function bundle tiny);
-  // the browser pack is downloaded to /tmp on first use and reused while warm
-  const sparticuz = resolveSparticuz();
-  const { chromium } = require('playwright-core');
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const packUrl =
-    process.env.CHROMIUM_PACK_URL ||
-    `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.${arch}.tar`;
-  const executablePath = await sparticuz.executablePath(packUrl);
-  if (!executablePath) {
-    throw new Error('chromium-min returned an empty executablePath');
-  }
-  return chromium.launch({ headless: true, args: sparticuz.args, executablePath });
-}
-
-async function launchBrowser() {
-  if (USE_LAMBDA_CHROMIUM) return launchLambdaChromium();
-  try {
-    const { chromium } = require('playwright');
-    return await chromium.launch({ headless: true });
-  } catch (err) {
-    // On linux with no locally-installed browser we're almost certainly on a
-    // serverless host that env detection missed — fall back to lambda chromium.
-    if (process.platform === 'linux') return launchLambdaChromium();
-    throw err;
-  }
-}
-
-async function getBrowser() {
-  if (browserPromise) {
-    const b = await browserPromise.catch(() => null);
-    if (b && b.isConnected()) return b;
-    browserPromise = null; // stale after a lambda freeze/crash — relaunch
-  }
-  browserPromise = launchBrowser();
-  return browserPromise;
-}
-
-async function closeBrowser() {
-  if (browserPromise) {
-    const b = await browserPromise;
-    browserPromise = null;
-    await b.close().catch(() => {});
-  }
-}
+// ---------- HTTP session (cookies + anti-forgery token from the Details page) ----------
 
 function detailsUrl(locationId) {
   return `${BASE}/DEP/NJOutdoors/Park/Details?locationId=${locationId}`;
 }
 
-async function openParkPage(locationId) {
-  const browser = await getBrowser();
-  const context = await browser.newContext({ userAgent: UA });
-  const page = await context.newPage();
-  if (IS_SERVERLESS) {
-    // function invocations have tight time limits — don't wait for networkidle,
-    // just for the server-rendered verification token to be present
-    await page.goto(detailsUrl(locationId), { waitUntil: 'domcontentloaded', timeout: 25000 });
-    // the token input is type=hidden — wait for presence, not visibility
-    await page.waitForSelector('input[name="__RequestVerificationToken"]', {
-      state: 'attached',
-      timeout: 15000,
-    });
-  } else {
-    await page.goto(detailsUrl(locationId), { waitUntil: 'networkidle', timeout: 90000 });
+async function openParkSession(locationId) {
+  const res = await fetch(detailsUrl(locationId), {
+    headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml' },
+    redirect: 'follow',
+  });
+  if (!res.ok) throw new Error(`park page HTTP ${res.status}`);
+  const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  const cookieHeader = setCookies.map((c) => c.split(';')[0]).join('; ');
+  const html = await res.text();
+  const tokenMatch = html.match(/name="__RequestVerificationToken"[^>]*value="([^"]+)"/);
+  if (!tokenMatch) {
+    throw new Error('could not find __RequestVerificationToken on park page (bot wall or format change?)');
   }
-  return { context, page };
+  return { locationId, cookieHeader, token: tokenMatch[1], html };
 }
 
-// ---------- catalog (per-park types/features/toilet info scraped from the Details page DOM) ----------
+// ---------- catalog (per-park types/features/toilet info parsed from the page HTML) ----------
+
+function stripTags(s) {
+  return s
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseCatalogHtml(html, locationId) {
+  const types = [];
+  for (const m of html.matchAll(
+    /<input[^>]*class="[^"]*type-filter[^"]*"[^>]*value="(\d+)"[^>]*>[\s\S]{0,200}?<label[^>]*>([^<]+)<\/label>/g
+  )) {
+    types.push({ id: Number(m[1]), name: m[2].trim() });
+  }
+  const features = [];
+  for (const m of html.matchAll(
+    /<input[^>]*class="[^"]*feature-filter[^"]*"[^>]*featureid="(\d+)"[^>]*id="([^"]+)"[\s\S]{0,400}?<label for="\2"[^>]*>([^<]+)<\/label>/g
+  )) {
+    features.push({ id: Number(m[1]), name: m[3].trim() });
+  }
+  const sites = {};
+  const parts = html.split(/(?=<div class="single location-site)/);
+  for (const part of parts.slice(1)) {
+    const idMatch = part.match(/site="(\d+)"/);
+    if (!idMatch) continue;
+    const text = stripTags(part.slice(0, 8000));
+    const grab = (label) => {
+      const m = text.match(
+        new RegExp(`${label}:\\s*(.*?)(?=\\s*(?:Area|Site Access|Toilets|Cost|Maximum People|Shade|Site Type)\\s*:|$)`)
+      );
+      return m ? m[1].trim() : '';
+    };
+    sites[idMatch[1]] = {
+      area: grab('Area'),
+      access: grab('Site Access'),
+      toilets: (text.match(/Toilets:\s*(Flush|Pit|None)/i) || ['', ''])[1],
+    };
+  }
+  return { locationId, fetchedAt: Date.now(), types, features, sites };
+}
 
 function catalogPath(locationId) {
   return path.join(DATA_DIR, `catalog-${locationId}.json`);
@@ -225,60 +199,17 @@ function readCachedCatalog(locationId) {
   return null;
 }
 
-async function scrapeCatalog(page, locationId) {
-  const scraped = await page.evaluate(() => {
-    const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
-    const labelFor = (input) => {
-      const lab = input.closest('label');
-      if (lab) return clean(lab.textContent);
-      if (input.id) {
-        const byFor = document.querySelector(`label[for="${input.id}"]`);
-        if (byFor) return clean(byFor.textContent);
-      }
-      return clean(input.parentElement && input.parentElement.textContent);
-    };
-    const types = [...document.querySelectorAll('input.type-filter')].map((el) => ({
-      id: Number(el.value),
-      name: labelFor(el),
-    }));
-    const features = [...document.querySelectorAll('input.feature-filter')].map((el) => ({
-      id: Number(el.getAttribute('featureid')),
-      name: labelFor(el),
-    }));
-    const sites = {};
-    for (const row of document.querySelectorAll('.location-site')) {
-      const siteId = row.getAttribute('site');
-      if (!siteId) continue;
-      const text = clean(row.textContent);
-      const grab = (label) => {
-        const m = text.match(
-          new RegExp(
-            `${label}:\\s*(.*?)(?=\\s*(?:Area|Site Access|Toilets|Cost|Maximum People|Shade|Site Type)\\s*:|$)`
-          )
-        );
-        return m ? m[1].trim() : '';
-      };
-      sites[siteId] = {
-        area: grab('Area'),
-        access: grab('Site Access'),
-        toilets: (text.match(/Toilets:\s*(Flush|Pit|None)/i) || ['', ''])[1],
-      };
-    }
-    return { types, features, sites };
-  });
-
-  const catalog = { locationId, fetchedAt: Date.now(), ...scraped };
+function getCatalog(session) {
+  const cached = readCachedCatalog(session.locationId);
+  if (cached) return cached;
+  const catalog = parseCatalogHtml(session.html, session.locationId);
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(catalogPath(locationId), JSON.stringify(catalog, null, 2));
+    fs.writeFileSync(catalogPath(session.locationId), JSON.stringify(catalog, null, 2));
   } catch {
     /* read-only or ephemeral filesystem — cache is best-effort */
   }
   return catalog;
-}
-
-async function getCatalog(page, locationId) {
-  return readCachedCatalog(locationId) || scrapeCatalog(page, locationId);
 }
 
 // Union of types/features across all cached catalogs, falling back to the static ID tables.
@@ -304,42 +235,38 @@ function metaFromCatalogs() {
 
 // ---------- availability API ----------
 
-async function fetchAvailability(page, locationId, fromDateISO, typeIds, featureIds) {
-  const token = await page
-    .$eval('input[name="__RequestVerificationToken"]', (el) => el.value)
-    .catch(() => null);
-  if (!token) throw new Error('could not find __RequestVerificationToken on park page');
-
+async function fetchAvailability(session, fromDateISO, typeIds, featureIds) {
   const body = new URLSearchParams({
-    locationId: String(locationId),
+    locationId: String(session.locationId),
     fromDate: isoToMDY(fromDateISO),
     limitTypes: typeIds.join(','),
     limitFeatures: featureIds.join(','),
     trailerLength: '',
     peopleSupported: '',
     vehiclesSupported: '',
-    __RequestVerificationToken: token,
+    __RequestVerificationToken: session.token,
   }).toString();
 
-  const res = await page.evaluate(async (postBody) => {
-    const r = await fetch('/DEP/NJOutdoors/Park/ListSiteAvailabilityJson', {
-      method: 'POST',
-      headers: {
-        'X-Requested-With': 'XMLHttpRequest',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      },
-      body: postBody,
-      redirect: 'follow',
-    });
-    return { status: r.status, url: r.url, text: await r.text() };
-  }, body);
+  const res = await fetch(`${BASE}/DEP/NJOutdoors/Park/ListSiteAvailabilityJson`, {
+    method: 'POST',
+    headers: {
+      'User-Agent': UA,
+      Cookie: session.cookieHeader,
+      'X-Requested-With': 'XMLHttpRequest',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      Referer: detailsUrl(session.locationId),
+      Origin: BASE,
+    },
+    body,
+    redirect: 'follow',
+  });
 
-  if (res.url.includes('ListSiteAvailabilityJson') === false || res.status !== 200) {
+  if (!res.ok || !res.url.includes('ListSiteAvailabilityJson')) {
     throw new Error(`availability request failed (status ${res.status}, url ${res.url})`);
   }
   let json;
   try {
-    json = JSON.parse(res.text);
+    json = JSON.parse(await res.text());
   } catch {
     throw new Error('availability response was not JSON (session/format change?)');
   }
@@ -409,61 +336,57 @@ function sortRows(rows) {
 // Which of the requested type IDs does this park actually offer?
 function parkTypeIds(catalog, requested) {
   const offered = new Set((catalog.types || []).map((t) => t.id).filter(Boolean));
-  if (!offered.size) return requested; // catalog scrape found nothing — don't skip, just try
+  if (!offered.size) return requested; // catalog parse found nothing — don't skip, just try
   return requested.filter((t) => offered.has(t));
 }
 
 // ---------- specific-date search (one park) ----------
 
 async function searchPark({ locationId, date, nights, types, features, flushOnly, minPeople }) {
-  const { context, page } = await openParkPage(locationId);
-  try {
-    const catalog = await getCatalog(page, locationId);
-    const useTypes = types.length ? parkTypeIds(catalog, types) : [];
-    if (types.length && !useTypes.length) {
-      return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: true, sites: [], totalMatching: 0 };
-    }
-
-    const apiSites = await fetchAvailability(page, locationId, date, useTypes, features);
-
-    const showerSelected = features.includes(SHOWER_FEATURE_ID);
-    let showerIds = new Set();
-    if (!showerSelected && apiSites.length) {
-      try {
-        const showerSites = await fetchAvailability(page, locationId, date, useTypes, [
-          ...features,
-          SHOWER_FEATURE_ID,
-        ]);
-        showerIds = new Set(showerSites.map((s) => s.SiteDetails.SiteId));
-      } catch {
-        /* shower tagging is best-effort */
-      }
-    }
-
-    const matching = apiSites
-      .map((s) => ({ api: s, row: siteRow(s, catalog, showerIds, showerSelected) }))
-      .filter(({ row }) => passesFilters(row, { flushOnly, minPeople }));
-
-    const available = matching
-      .filter(({ api }) => {
-        const ds = api.Dates || [];
-        if (ds.length < nights) return false;
-        for (let i = 0; i < nights; i++) if (!nightFree(ds[i])) return false;
-        return true;
-      })
-      .map(({ row }) => row);
-
-    return {
-      locationId,
-      park: PARKS[locationId],
-      bookUrl: detailsUrl(locationId),
-      skipped: false,
-      totalMatching: matching.length,
-      sites: sortRows(available),
-    };
-  } finally {
-    await context.close().catch(() => {});
+  const session = await openParkSession(locationId);
+  const catalog = getCatalog(session);
+  const useTypes = types.length ? parkTypeIds(catalog, types) : [];
+  if (types.length && !useTypes.length) {
+    return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: true, sites: [], totalMatching: 0 };
   }
+
+  const apiSites = await fetchAvailability(session, date, useTypes, features);
+
+  const showerSelected = features.includes(SHOWER_FEATURE_ID);
+  let showerIds = new Set();
+  if (!showerSelected && apiSites.length) {
+    try {
+      const showerSites = await fetchAvailability(session, date, useTypes, [
+        ...features,
+        SHOWER_FEATURE_ID,
+      ]);
+      showerIds = new Set(showerSites.map((s) => s.SiteDetails.SiteId));
+    } catch {
+      /* shower tagging is best-effort */
+    }
+  }
+
+  const matching = apiSites
+    .map((s) => ({ api: s, row: siteRow(s, catalog, showerIds, showerSelected) }))
+    .filter(({ row }) => passesFilters(row, { flushOnly, minPeople }));
+
+  const available = matching
+    .filter(({ api }) => {
+      const ds = api.Dates || [];
+      if (ds.length < nights) return false;
+      for (let i = 0; i < nights; i++) if (!nightFree(ds[i])) return false;
+      return true;
+    })
+    .map(({ row }) => row);
+
+  return {
+    locationId,
+    park: PARKS[locationId],
+    bookUrl: detailsUrl(locationId),
+    skipped: false,
+    totalMatching: matching.length,
+    sites: sortRows(available),
+  };
 }
 
 // ---------- weekend recommender (one park, all weekends of a month) ----------
@@ -474,91 +397,63 @@ async function recommendPark({ locationId, month, types, features, flushOnly, mi
     return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: false, weekends: {} };
   }
 
-  const { context, page } = await openParkPage(locationId);
-  try {
-    const catalog = await getCatalog(page, locationId);
-    const useTypes = types.length ? parkTypeIds(catalog, types) : [];
-    if (types.length && !useTypes.length) {
-      return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: true, weekends: {} };
-    }
-
-    // Two 30-day windows (1st + 16th, clamped to today) cover stays starting through the 31st.
-    const today = todayISO();
-    const clamp = (iso) => (iso < today ? today : iso);
-    const fromDates = [...new Set([clamp(`${month}-01`), clamp(`${month}-16`)])];
-
-    // siteId -> { row, nights: { iso -> free } }
-    const sitesById = new Map();
-    for (const fromDate of fromDates) {
-      const apiSites = await fetchAvailability(page, locationId, fromDate, useTypes, features);
-      for (const s of apiSites) {
-        const id = s.SiteDetails.SiteId;
-        if (!sitesById.has(id)) {
-          sitesById.set(id, { row: siteRow(s, catalog, new Set(), features.includes(SHOWER_FEATURE_ID)), nights: {} });
-        }
-        const entry = sitesById.get(id);
-        (s.Dates || []).forEach((d, i) => {
-          entry.nights[addDays(fromDate, i)] = nightFree(d);
-        });
-      }
-      await new Promise((r) => setTimeout(r, 300));
-    }
-
-    const candidates = [...sitesById.values()].filter(({ row }) =>
-      passesFilters(row, { flushOnly, minPeople })
-    );
-
-    const result = {};
-    for (const w of weekends) {
-      const stayNights = [];
-      for (let i = 0; i < w.nights; i++) stayNights.push(addDays(w.arrival, i));
-      const free = candidates
-        .filter(({ nights }) => stayNights.every((iso) => nights[iso] === true))
-        .map(({ row }) => row);
-      result[w.arrival] = { ...w, sites: sortRows(free) };
-    }
-
-    return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: false, weekends: result };
-  } finally {
-    await context.close().catch(() => {});
+  const session = await openParkSession(locationId);
+  const catalog = getCatalog(session);
+  const useTypes = types.length ? parkTypeIds(catalog, types) : [];
+  if (types.length && !useTypes.length) {
+    return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: true, weekends: {} };
   }
+
+  // Two 30-day windows (1st + 16th, clamped to today) cover stays starting through the 31st.
+  const today = todayISO();
+  const clamp = (iso) => (iso < today ? today : iso);
+  const fromDates = [...new Set([clamp(`${month}-01`), clamp(`${month}-16`)])];
+
+  // siteId -> { row, nights: { iso -> free } }
+  const sitesById = new Map();
+  for (const fromDate of fromDates) {
+    const apiSites = await fetchAvailability(session, fromDate, useTypes, features);
+    for (const s of apiSites) {
+      const id = s.SiteDetails.SiteId;
+      if (!sitesById.has(id)) {
+        sitesById.set(id, { row: siteRow(s, catalog, new Set(), features.includes(SHOWER_FEATURE_ID)), nights: {} });
+      }
+      const entry = sitesById.get(id);
+      (s.Dates || []).forEach((d, i) => {
+        entry.nights[addDays(fromDate, i)] = nightFree(d);
+      });
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const candidates = [...sitesById.values()].filter(({ row }) =>
+    passesFilters(row, { flushOnly, minPeople })
+  );
+
+  const result = {};
+  for (const w of weekends) {
+    const stayNights = [];
+    for (let i = 0; i < w.nights; i++) stayNights.push(addDays(w.arrival, i));
+    const free = candidates
+      .filter(({ nights }) => stayNights.every((iso) => nights[iso] === true))
+      .map(({ row }) => row);
+    result[w.arrival] = { ...w, sites: sortRows(free) };
+  }
+
+  return { locationId, park: PARKS[locationId], bookUrl: detailsUrl(locationId), skipped: false, weekends: result };
 }
 
 function runtimeDebug() {
-  let chromiumMin;
-  try {
-    const m = require('@sparticuz/chromium-min');
-    chromiumMin = {
-      keys: Object.keys(m || {}),
-      execType: typeof (m && m.executablePath),
-      defaultType: typeof (m && m.default),
-      defaultExecType: typeof (m && m.default && m.default.executablePath),
-      resolved: (() => {
-        try {
-          resolveSparticuz();
-          return 'ok';
-        } catch (e) {
-          return String(e.message);
-        }
-      })(),
-    };
-  } catch (e) {
-    chromiumMin = `require failed: ${String(e.message)}`;
-  }
   return {
+    mode: 'plain-http',
     serverless: IS_SERVERLESS,
-    lambdaChromium: USE_LAMBDA_CHROMIUM,
     platform: process.platform,
-    arch: process.arch,
-    varTask: fs.existsSync('/var/task'),
-    appServerlessEnv: Boolean(process.env.APP_SERVERLESS),
-    chromiumMin,
+    node: process.version,
   };
 }
 
 module.exports = {
   PARKS,
-  runtimeDebug,
   SITE_TYPES,
   FEATURES,
   MIN_STAY_TYPE_IDS,
@@ -568,8 +463,7 @@ module.exports = {
   addDays,
   weekendsInMonth,
   metaFromCatalogs,
-  getBrowser,
-  closeBrowser,
   searchPark,
   recommendPark,
+  runtimeDebug,
 };
