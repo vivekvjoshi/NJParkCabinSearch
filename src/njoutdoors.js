@@ -126,25 +126,34 @@ function weekendsInMonth(month, arrivalDow) {
 
 let browserPromise = null;
 
-async function launchBrowser() {
-  if (USE_LAMBDA_CHROMIUM) {
-    // chromium-min ships no browser binary (keeps the function bundle tiny);
-    // the browser pack is downloaded to /tmp on first use and reused while warm
-    let sparticuz = require('@sparticuz/chromium-min');
-    // bundler interop: the module may arrive as { default: {...} }
-    if (sparticuz && typeof sparticuz.executablePath !== 'function' && sparticuz.default) {
-      sparticuz = sparticuz.default;
-    }
-    const { chromium } = require('playwright-core');
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-    const packUrl =
-      process.env.CHROMIUM_PACK_URL ||
-      `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.${arch}.tar`;
-    const executablePath = await sparticuz.executablePath(packUrl);
-    return chromium.launch({ headless: true, args: sparticuz.args, executablePath });
+async function launchLambdaChromium() {
+  // chromium-min ships no browser binary (keeps the function bundle tiny);
+  // the browser pack is downloaded to /tmp on first use and reused while warm
+  let sparticuz = require('@sparticuz/chromium-min');
+  // bundler interop: the module may arrive as { default: {...} }
+  if (sparticuz && typeof sparticuz.executablePath !== 'function' && sparticuz.default) {
+    sparticuz = sparticuz.default;
   }
-  const { chromium } = require('playwright');
-  return chromium.launch({ headless: true });
+  const { chromium } = require('playwright-core');
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const packUrl =
+    process.env.CHROMIUM_PACK_URL ||
+    `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.${arch}.tar`;
+  const executablePath = await sparticuz.executablePath(packUrl);
+  return chromium.launch({ headless: true, args: sparticuz.args, executablePath });
+}
+
+async function launchBrowser() {
+  if (USE_LAMBDA_CHROMIUM) return launchLambdaChromium();
+  try {
+    const { chromium } = require('playwright');
+    return await chromium.launch({ headless: true });
+  } catch (err) {
+    // On linux with no locally-installed browser we're almost certainly on a
+    // serverless host that env detection missed — fall back to lambda chromium.
+    if (process.platform === 'linux') return launchLambdaChromium();
+    throw err;
+  }
 }
 
 async function getBrowser() {
@@ -503,8 +512,20 @@ async function recommendPark({ locationId, month, types, features, flushOnly, mi
   }
 }
 
+function runtimeDebug() {
+  return {
+    serverless: IS_SERVERLESS,
+    lambdaChromium: USE_LAMBDA_CHROMIUM,
+    platform: process.platform,
+    arch: process.arch,
+    varTask: fs.existsSync('/var/task'),
+    appServerlessEnv: Boolean(process.env.APP_SERVERLESS),
+  };
+}
+
 module.exports = {
   PARKS,
+  runtimeDebug,
   SITE_TYPES,
   FEATURES,
   MIN_STAY_TYPE_IDS,

@@ -12,5 +12,6 @@ export async function GET() {
     showerFeatureId: nj.SHOWER_FEATURE_ID,
     today: nj.todayISO(),
     nlEnabled: Boolean(process.env.NVIDIA_API_KEY),
+    debug: nj.runtimeDebug(),
   });
 }
