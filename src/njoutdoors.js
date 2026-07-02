@@ -177,7 +177,11 @@ async function openParkPage(locationId) {
     // function invocations have tight time limits — don't wait for networkidle,
     // just for the server-rendered verification token to be present
     await page.goto(detailsUrl(locationId), { waitUntil: 'domcontentloaded', timeout: 25000 });
-    await page.waitForSelector('input[name="__RequestVerificationToken"]', { timeout: 10000 });
+    // the token input is type=hidden — wait for presence, not visibility
+    await page.waitForSelector('input[name="__RequestVerificationToken"]', {
+      state: 'attached',
+      timeout: 15000,
+    });
   } else {
     await page.goto(detailsUrl(locationId), { waitUntil: 'networkidle', timeout: 90000 });
   }
