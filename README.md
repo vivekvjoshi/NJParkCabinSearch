@@ -4,68 +4,64 @@ Search all 18 New Jersey state parks on njportal.com for available campsites, ca
 lean-tos and shelters in one shot — with filters, a weekend-recommendation mode, and
 optional natural-language search. The official site only lets you check one park at a time.
 
-## Run it
+Built with **Next.js (App Router)**; deploys to Netlify with its first-class Next.js runtime.
+
+## Run locally
 
 ```bash
 npm install
-npx playwright install chromium   # first run only
-npm start                         # → http://localhost:3000
+npx playwright install chromium   # first run only (local scraping browser)
+npm run dev                       # → http://localhost:3000
+# or production mode: npm run build && npm start
 ```
 
 ## Natural-language search (optional)
 
-Put your NVIDIA API key in `.env`:
+Put your NVIDIA API key in `.env` (Next.js loads it automatically):
 
 ```
 NVIDIA_API_KEY=nvapi-...
 ```
 
-Restart the server, then type things like *“cabin for 4 with showers over a July weekend”*
-into the search bar. The query is parsed by `nvidia/nemotron-3-ultra-550b-a55b` via NVIDIA's
-OpenAI-compatible API into structured filters, which then drive the normal live search.
+Then type things like *“cabin for 4 with showers over a July weekend”* into the search bar.
+The query is parsed by `nvidia/nemotron-3-ultra-550b-a55b` via NVIDIA's OpenAI-compatible
+API into structured filters, which then drive the normal live search.
 
 ## How it works
 
-- `src/njoutdoors.js` — headless Playwright Chromium loads each park's Details page and calls
-  the site's own `ListSiteAvailabilityJson` API from inside the page. Toilet type / area /
-  access are scraped from the page DOM and cached in `data/catalog-<id>.json` (7-day TTL).
-- `src/server.js` — Express server with `GET /api/meta`, `GET /api/search` (SSE),
-  `GET /api/recommend` (SSE, grades every weekend of a month), `POST /api/nl`.
-- `public/` — vanilla HTML/CSS/JS frontend, Kayak-inspired design. Weekend finder is the
-  default mode and **Cabin is the default site type**.
+- `src/njoutdoors.js` — scraper core. Headless Chromium loads each park's Details page on
+  njportal.com and calls the site's own `ListSiteAvailabilityJson` API from inside the page.
+  Toilet type / area / access are scraped from the page DOM and cached (7-day TTL) in
+  `data/` locally or `/tmp` on serverless. Locally it uses `playwright`; on Lambda it uses
+  `playwright-core` + `@sparticuz/chromium-min`, downloading the browser pack to `/tmp` at
+  runtime so function bundles stay small.
+- `app/api/` — route handlers: `meta` (parks/types/features), `park` (searches **one park
+  per request** to fit serverless time limits; `mode=search` or `mode=recommend`), and `nl`
+  (natural-language parsing, `src/nl.js`).
+- `app/page.js` — the UI (Kayak-inspired, forest-green). Weekend finder is the default mode,
+  **Cabin is the default site type**, and the flush-toilets filter starts on. The frontend
+  loops over selected parks, calling `/api/park` once per park with live progress.
 
 ## Deploy to Netlify
 
-The repo doubles as a Netlify site: `public/` is served statically and the API lives in
-`netlify/functions/` (`/api/meta`, `/api/park`, `/api/nl`). On Netlify the frontend detects
-serverless mode (`meta.serverless`) and fans out one fetch per park instead of using SSE;
-scraping runs on `playwright-core` + `@sparticuz/chromium-min` inside the function — the
-Chromium binary itself is downloaded to `/tmp` at runtime from the Sparticuz release pack,
-so function bundles stay small.
-
-⚠️ **Don't deploy by drag-and-drop.** Function bundling needs `node_modules` present, which
-drag-and-drop uploads lack (symptom: `/api/park` returns `Cannot find module ...`). Deploy
-with the CLI from the project directory (or connect the repo to GitHub for CI builds):
+Connect the repo to GitHub and add the site in Netlify (recommended — every push deploys
+through CI), or deploy from this directory with the CLI:
 
 ```bash
 npx -y netlify-cli login
-npx -y netlify-cli link      # pick the existing site (or: netlify init)
-npx -y netlify-cli deploy --prod
+npx -y netlify-cli link          # pick your existing site
+npx -y netlify-cli deploy --prod --build
 ```
 
-Then in the Netlify dashboard (Site configuration → Environment variables) set:
+`netlify.toml` already sets `npm run build` + the `@netlify/plugin-nextjs` runtime.
+In the Netlify dashboard (Site configuration → Environment variables) set:
 
 - `NVIDIA_API_KEY` — enables natural-language search (optional)
-- `CHROMIUM_PACK_URL` — optional override for the Chromium pack download URL
-  (defaults to the official `@sparticuz/chromium` v149 release pack matching the
-  function's architecture)
+- `CHROMIUM_PACK_URL` — optional override for the Chromium pack download URL (defaults to
+  the official `@sparticuz/chromium` v149 release pack for the function's architecture)
 
-Notes for the serverless deployment:
-
-- Each `/api/park` call loads one park and must finish inside the function time limit
-  (10s default, raise to 26s in Site configuration → Functions if searches time out).
-- Catalog caches live in `/tmp` and only survive while the function stays warm, so
-  cold requests re-scrape the park page (adds ~1s).
+If park searches time out, raise the function timeout toward 26s in Site configuration →
+Functions.
 
 ## Disclaimer
 

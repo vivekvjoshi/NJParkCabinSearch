@@ -2,15 +2,17 @@
   "name": "nj-site-finder",
   "version": "1.0.0",
   "description": "Search all 18 New Jersey state parks for available campsites and cabins at once",
-  "type": "commonjs",
-  "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
   },
   "dependencies": {
     "@sparticuz/chromium-min": "^149.0.0",
-    "express": "^4.19.2",
+    "next": "^16.2.10",
     "playwright": "^1.45.0",
-    "playwright-core": "^1.61.1"
+    "playwright-core": "^1.61.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   }
 }

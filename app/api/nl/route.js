@@ -1,14 +1,12 @@
-import { parseNlQuery } from '../../src/nl.js';
+import { parseNlQuery } from '../../../src/nl.js';
 
-export const config = { path: '/api/nl' };
+export const dynamic = 'force-dynamic';
+export const maxDuration = 26;
 
-export default async (req) => {
-  if (req.method !== 'POST') {
-    return Response.json({ error: 'POST only' }, { status: 405 });
-  }
+export async function POST(request) {
   let query = '';
   try {
-    const body = await req.json();
+    const body = await request.json();
     query = String(body.query || '').trim();
   } catch {
     /* fall through to the empty-query error */
@@ -23,4 +21,4 @@ export default async (req) => {
       { status: err.statusCode || 502 }
     );
   }
-};
+}

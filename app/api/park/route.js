@@ -1,8 +1,9 @@
-// Searches ONE park per invocation — serverless functions have tight time
+// Searches ONE park per request — serverless functions have tight time
 // limits, so the frontend loops over parks and calls this once per park.
-import nj from '../../src/njoutdoors.js';
+import nj from '../../../src/njoutdoors.js';
 
-export const config = { path: '/api/park' };
+export const dynamic = 'force-dynamic';
+export const maxDuration = 26;
 
 const csvInts = (v) =>
   String(v || '')
@@ -10,9 +11,8 @@ const csvInts = (v) =>
     .map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isInteger(n));
 
-export default async (req) => {
-  const url = new URL(req.url);
-  const q = Object.fromEntries(url.searchParams);
+export async function GET(request) {
+  const q = Object.fromEntries(new URL(request.url).searchParams);
   const locationId = parseInt(q.park, 10);
   if (!nj.PARKS[locationId]) {
     return Response.json({ error: `unknown park ${q.park}` }, { status: 400 });
@@ -57,4 +57,4 @@ export default async (req) => {
       weekends: {},
     });
   }
-};
+}

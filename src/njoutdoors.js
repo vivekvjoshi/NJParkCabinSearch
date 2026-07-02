@@ -70,9 +70,11 @@ const FEATURES = {
 const SHOWER_FEATURE_ID = 14;
 const MIN_STAY_TYPE_IDS = [1, 2, 3]; // Cabin, Lean-To, Shelter: peak-season fixed-arrival 7/14-night rule
 
+// cwd, not __dirname: this file gets bundled into .next/ by the Next build,
+// but the process always runs from the project root
 const DATA_DIR = IS_SERVERLESS
   ? path.join('/tmp', 'njdata')
-  : path.join(__dirname, '..', 'data');
+  : path.join(process.cwd(), 'data');
 const CATALOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ---------- date helpers (all pure string math on YYYY-MM-DD, no TZ surprises) ----------

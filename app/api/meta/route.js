@@ -1,8 +1,8 @@
-import nj from '../../src/njoutdoors.js';
+import nj from '../../../src/njoutdoors.js';
 
-export const config = { path: '/api/meta' };
+export const dynamic = 'force-dynamic';
 
-export default async () => {
+export async function GET() {
   const { types, features } = nj.metaFromCatalogs();
   return Response.json({
     parks: Object.entries(nj.PARKS).map(([id, name]) => ({ id: Number(id), name })),
@@ -12,6 +12,5 @@ export default async () => {
     showerFeatureId: nj.SHOWER_FEATURE_ID,
     today: nj.todayISO(),
     nlEnabled: Boolean(process.env.NVIDIA_API_KEY),
-    serverless: true, // tells the frontend to fan out per-park fetches instead of SSE
   });
-};
+}
