@@ -1,8 +1,11 @@
 [build]
   publish = "public"
+  # no site build needed, but installing deps here guarantees node_modules exists
+  # when Netlify bundles the functions (required for the packages below)
+  command = "npm install"
 
 [functions]
   node_bundler = "esbuild"
   # copy these packages whole into the function bundle — playwright's internals
   # use dynamic requires that esbuild can't statically trace
-  external_node_modules = ["playwright", "playwright-core", "@sparticuz/chromium"]
+  external_node_modules = ["playwright", "playwright-core", "@sparticuz/chromium-min"]

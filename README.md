@@ -39,21 +39,26 @@ OpenAI-compatible API into structured filters, which then drive the normal live 
 The repo doubles as a Netlify site: `public/` is served statically and the API lives in
 `netlify/functions/` (`/api/meta`, `/api/park`, `/api/nl`). On Netlify the frontend detects
 serverless mode (`meta.serverless`) and fans out one fetch per park instead of using SSE;
-scraping runs on `playwright-core` + `@sparticuz/chromium` inside the function.
+scraping runs on `playwright-core` + `@sparticuz/chromium-min` inside the function — the
+Chromium binary itself is downloaded to `/tmp` at runtime from the Sparticuz release pack,
+so function bundles stay small.
+
+⚠️ **Don't deploy by drag-and-drop.** Function bundling needs `node_modules` present, which
+drag-and-drop uploads lack (symptom: `/api/park` returns `Cannot find module ...`). Deploy
+with the CLI from the project directory (or connect the repo to GitHub for CI builds):
 
 ```bash
-npm install -g netlify-cli
-netlify login
-netlify init      # or: netlify deploy --prod
+npx -y netlify-cli login
+npx -y netlify-cli link      # pick the existing site (or: netlify init)
+npx -y netlify-cli deploy --prod
 ```
 
 Then in the Netlify dashboard (Site configuration → Environment variables) set:
 
 - `NVIDIA_API_KEY` — enables natural-language search (optional)
-- `CHROMIUM_PACK_URL` — optional; URL of a `@sparticuz/chromium` release pack
-  (e.g. `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.arm64.tar`
-  — match your function architecture). Set this if a deploy fails on function bundle size:
-  the browser is then downloaded at runtime instead of being shipped in the zip.
+- `CHROMIUM_PACK_URL` — optional override for the Chromium pack download URL
+  (defaults to the official `@sparticuz/chromium` v149 release pack matching the
+  function's architecture)
 
 Notes for the serverless deployment:
 

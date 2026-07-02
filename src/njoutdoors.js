@@ -121,11 +121,15 @@ let browserPromise = null;
 
 async function launchBrowser() {
   if (USE_LAMBDA_CHROMIUM) {
-    const sparticuz = require('@sparticuz/chromium');
+    // chromium-min ships no browser binary (keeps the function bundle tiny);
+    // the browser pack is downloaded to /tmp on first use and reused while warm
+    const sparticuz = require('@sparticuz/chromium-min');
     const { chromium } = require('playwright-core');
-    // CHROMIUM_PACK_URL lets deploys stay under bundle-size limits by fetching
-    // the browser at runtime instead of shipping it in the function zip.
-    const executablePath = await sparticuz.executablePath(process.env.CHROMIUM_PACK_URL || undefined);
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+    const packUrl =
+      process.env.CHROMIUM_PACK_URL ||
+      `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.${arch}.tar`;
+    const executablePath = await sparticuz.executablePath(packUrl);
     return chromium.launch({ headless: true, args: sparticuz.args, executablePath });
   }
   const { chromium } = require('playwright');
