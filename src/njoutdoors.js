@@ -126,20 +126,32 @@ function weekendsInMonth(month, arrivalDow) {
 
 let browserPromise = null;
 
+// @sparticuz/chromium-min is ESM-only with a class default export; depending on
+// which bundler/interop touched it, require() may hand back the namespace, the
+// class, or a double-wrapped default. Walk the candidates for the real one.
+function resolveSparticuz() {
+  const m = require('@sparticuz/chromium-min');
+  for (const c of [m, m && m.default, m && m.default && m.default.default]) {
+    if (c && typeof c.executablePath === 'function') return c;
+  }
+  throw new Error(
+    `chromium-min module shape unrecognized: keys=${JSON.stringify(Object.keys(m || {}))}`
+  );
+}
+
 async function launchLambdaChromium() {
   // chromium-min ships no browser binary (keeps the function bundle tiny);
   // the browser pack is downloaded to /tmp on first use and reused while warm
-  let sparticuz = require('@sparticuz/chromium-min');
-  // bundler interop: the module may arrive as { default: {...} }
-  if (sparticuz && typeof sparticuz.executablePath !== 'function' && sparticuz.default) {
-    sparticuz = sparticuz.default;
-  }
+  const sparticuz = resolveSparticuz();
   const { chromium } = require('playwright-core');
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const packUrl =
     process.env.CHROMIUM_PACK_URL ||
     `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.${arch}.tar`;
   const executablePath = await sparticuz.executablePath(packUrl);
+  if (!executablePath) {
+    throw new Error('chromium-min returned an empty executablePath');
+  }
   return chromium.launch({ headless: true, args: sparticuz.args, executablePath });
 }
 
@@ -513,6 +525,26 @@ async function recommendPark({ locationId, month, types, features, flushOnly, mi
 }
 
 function runtimeDebug() {
+  let chromiumMin;
+  try {
+    const m = require('@sparticuz/chromium-min');
+    chromiumMin = {
+      keys: Object.keys(m || {}),
+      execType: typeof (m && m.executablePath),
+      defaultType: typeof (m && m.default),
+      defaultExecType: typeof (m && m.default && m.default.executablePath),
+      resolved: (() => {
+        try {
+          resolveSparticuz();
+          return 'ok';
+        } catch (e) {
+          return String(e.message);
+        }
+      })(),
+    };
+  } catch (e) {
+    chromiumMin = `require failed: ${String(e.message)}`;
+  }
   return {
     serverless: IS_SERVERLESS,
     lambdaChromium: USE_LAMBDA_CHROMIUM,
@@ -520,6 +552,7 @@ function runtimeDebug() {
     arch: process.arch,
     varTask: fs.existsSync('/var/task'),
     appServerlessEnv: Boolean(process.env.APP_SERVERLESS),
+    chromiumMin,
   };
 }
 
