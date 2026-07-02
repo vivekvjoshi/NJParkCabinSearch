@@ -8,7 +8,7 @@
     mode: 'weekend', // weekend finder is the default mode
     types: new Set([1]), // Cabin is the default site type
     features: new Set(),
-    flushOnly: false,
+    flushOnly: true, // flush toilets on by default
     parks: new Set(),
     meta: null,
     es: null,
