@@ -63,4 +63,58 @@ async function forecastForParks(ids) {
   return out;
 }
 
-module.exports = { PARK_COORDS, forecastForParks };
+// Climatological normals from the Open-Meteo archive: for every MM-DD, the
+// average high/low and the share of days with measurable precipitation (≥1 mm)
+// over the last 3 full calendar years. Used for stays beyond the 16-day
+// forecast window — honest "typical weather", not a prediction.
+async function normalsForParks(ids) {
+  const valid = ids.filter((id) => PARK_COORDS[id]);
+  if (!valid.length) throw new Error('no known park coordinates requested');
+  const y = new Date().getFullYear();
+  const lats = valid.map((id) => PARK_COORDS[id][0]).join(',');
+  const lons = valid.map((id) => PARK_COORDS[id][1]).join(',');
+  const url =
+    'https://archive-api.open-meteo.com/v1/archive' +
+    `?latitude=${lats}&longitude=${lons}` +
+    '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
+    `&temperature_unit=fahrenheit&timezone=America%2FNew_York` +
+    `&start_date=${y - 3}-01-01&end_date=${y - 1}-12-31`;
+
+  const res = await fetch(url, { headers: { 'User-Agent': 'njparksitefinder/1.0' } });
+  if (!res.ok) throw new Error(`open-meteo archive HTTP ${res.status}`);
+  const data = await res.json();
+  return computeNormals(Array.isArray(data) ? data : [data], valid);
+}
+
+// list: archive responses aligned with ids → { locationId: { 'MM-DD': {hi, lo, wet} } }
+function computeNormals(list, ids) {
+  const out = {};
+  ids.forEach((id, i) => {
+    const d = list[i] && list[i].daily;
+    if (!d || !Array.isArray(d.time)) return;
+    const acc = {}; // 'MM-DD' -> { hiSum, loSum, wetDays, n }
+    d.time.forEach((iso, j) => {
+      const hi = d.temperature_2m_max?.[j];
+      const lo = d.temperature_2m_min?.[j];
+      if (hi == null || lo == null) return;
+      const key = iso.slice(5);
+      const a = (acc[key] ||= { hiSum: 0, loSum: 0, wetDays: 0, n: 0 });
+      a.hiSum += hi;
+      a.loSum += lo;
+      a.n += 1;
+      if ((d.precipitation_sum?.[j] ?? 0) >= 1) a.wetDays += 1;
+    });
+    const perDay = {};
+    for (const [k, a] of Object.entries(acc)) {
+      perDay[k] = {
+        hi: Math.round(a.hiSum / a.n),
+        lo: Math.round(a.loSum / a.n),
+        wet: Math.round((a.wetDays / a.n) * 100),
+      };
+    }
+    out[id] = perDay;
+  });
+  return out;
+}
+
+module.exports = { PARK_COORDS, forecastForParks, normalsForParks, computeNormals };

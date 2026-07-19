@@ -2,7 +2,7 @@ import { plural } from '../lib/format.js';
 import SiteList from './SiteList.js';
 import WeatherBadge from './WeatherBadge.js';
 
-export default function ParkSection({ p, maxRows, nights, sortPref, arrival, days }) {
+export default function ParkSection({ p, maxRows, nights, sortPref, arrival, days, normals }) {
   const minCost = p.sites.reduce((m, s) => Math.min(m, s.costRes ?? Infinity), Infinity);
   return (
     <div className="park-section">
@@ -15,7 +15,7 @@ export default function ParkSection({ p, maxRows, nights, sortPref, arrival, day
           {minCost !== Infinity ? <span className="from-price">{`from ${minCost}/night`}</span> : null}
         </div>
         <div className="park-section-side">
-          <WeatherBadge days={days} arrival={arrival} nights={nights} />
+          <WeatherBadge days={days} normals={normals} arrival={arrival} nights={nights} />
           <a className="link-book" href={p.bookUrl} target="_blank" rel="noopener noreferrer">
             Book ↗
           </a>

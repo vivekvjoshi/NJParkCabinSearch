@@ -66,4 +66,24 @@ function stayForecast(days, arrival, nights) {
   };
 }
 
-module.exports = { addDays, codeInfo, codeRank, stayForecast };
+// Aggregate one park's climatological normals over a stay (arrival … checkout
+// day) — averages, since these are "typical" values, not a prediction.
+// normals: { 'MM-DD': {hi, lo, wet} } → { hi, lo, wet } or null.
+function typicalForStay(normals, arrival, nights) {
+  if (!normals || !/^\d{4}-\d{2}-\d{2}$/.test(arrival || '')) return null;
+  const n = Math.max(1, parseInt(nights, 10) || 1);
+  const parts = [];
+  for (let i = 0; i <= n; i++) {
+    const d = normals[addDays(arrival, i).slice(5)];
+    if (d) parts.push(d);
+  }
+  if (!parts.length) return null;
+  const avg = (f) => Math.round(parts.reduce((s, p) => s + f(p), 0) / parts.length);
+  return {
+    hi: avg((p) => p.hi),
+    lo: avg((p) => p.lo),
+    wet: Math.max(...parts.map((p) => p.wet)),
+  };
+}
+
+module.exports = { addDays, codeInfo, codeRank, stayForecast, typicalForStay };

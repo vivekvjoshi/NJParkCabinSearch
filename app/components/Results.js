@@ -166,7 +166,8 @@ export default function Results(props) {
                     nights={w.nights}
                     sortPref={sortPref}
                     arrival={w.arrival}
-                    days={weather?.[p.locationId]}
+                    days={weather?.days?.[p.locationId]}
+                    normals={weather?.normals?.[p.locationId]}
                   />
                 ))}
               </div>
@@ -212,7 +213,12 @@ export default function Results(props) {
                     </div>
                   </div>
                   <div className="park-section-side">
-                    <WeatherBadge days={weather?.[r.locationId]} arrival={dateUsed} nights={nightsUsed} />
+                    <WeatherBadge
+                      days={weather?.days?.[r.locationId]}
+                      normals={weather?.normals?.[r.locationId]}
+                      arrival={dateUsed}
+                      nights={nightsUsed}
+                    />
                     <a className="btn-book" href={r.bookUrl} target="_blank" rel="noopener noreferrer">
                       Book ↗
                     </a>

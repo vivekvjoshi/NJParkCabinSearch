@@ -51,7 +51,7 @@ export default function Home() {
   const [nlBusy, setNlBusy] = useState(false);
 
   const [theme, setTheme] = useState('light');
-  const [weather, setWeather] = useState(null); // { locationId: { iso: {hi,lo,precip,code} } }
+  const [weather, setWeather] = useState(null); // { days: {parkId: {iso: wx}}, normals: {parkId: {'MM-DD': normal}} }
 
   const search = useParkSearch();
   const initRef = useRef(false);
@@ -92,7 +92,7 @@ export default function Home() {
     fetch('/api/weather?parks=' + meta.parks.map((p) => p.id).join(','))
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (d?.days) setWeather(d.days);
+        if (d?.days) setWeather({ days: d.days, normals: d.normals || null });
       })
       .catch(() => {
         /* weather is optional */

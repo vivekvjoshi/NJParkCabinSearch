@@ -473,6 +473,8 @@ body { transition: background-color 0.2s ease, color 0.2s ease; }
 .wx-precip { color: #1d5dae; font-weight: 700; }
 :root[data-theme='dark'] .wx-precip { color: #6aa8e8; }
 .park-section-side { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.wx-badge.wx-typical { border-style: dashed; background: var(--bg); }
+.wx-tag { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink-faint); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

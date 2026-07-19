@@ -40,6 +40,8 @@ API into structured filters, which then drive the normal live search.
 - `src/weather.js` — 16-day forecasts from Open-Meteo (free, no API key) for all 18
   parks in a single request, behind `/api/weather` (rate-limited, cached 30 min).
   Park sections and date cards show a per-stay weather pill (☀️ 87°/62° 💧40%).
+  Stays beyond the 16-day window fall back to 3-year climatological normals
+  ("🌡️ ~84°/63° typical", dashed border), cached 24h.
 - `app/api/` — route handlers: `meta` (parks/types/features), `park` (checks **one park
   per request**; `mode=search` or `mode=recommend` grades every weekend of a month; one
   retry on transient errors, responses carry a `checkedAt` timestamp), and `nl`
@@ -77,6 +79,11 @@ npx -y netlify-cli deploy --prod --build
 `netlify.toml` already sets `npm run build` + the `@netlify/plugin-nextjs` runtime.
 In the Netlify dashboard (Site configuration → Environment variables) set
 `NVIDIA_API_KEY` to enable natural-language search.
+
+## License
+
+[Apache 2.0](LICENSE) © 2026 Vivek Joshi. Weather data from Open-Meteo (CC BY 4.0);
+availability data remains the property of its respective owners.
 
 ## Disclaimer
 

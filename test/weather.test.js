@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const wxui = require('../app/lib/weather.js');
+const { computeNormals } = require('../src/weather.js');
 
 test('addDays rolls over months', () => {
   assert.equal(wxui.addDays('2026-07-31', 1), '2026-08-01');
@@ -42,4 +43,32 @@ test('stayForecast skips missing days and returns null when fully out of window'
   assert.equal(wxui.stayForecast(days, '2026-09-01', 2), null);
   assert.equal(wxui.stayForecast(null, '2026-07-24', 2), null);
   assert.equal(wxui.stayForecast(days, 'not-a-date', 2), null);
+});
+
+test('computeNormals averages hi/lo and wet-day share per MM-DD', () => {
+  const list = [
+    {
+      daily: {
+        time: ['2023-07-20', '2024-07-20', '2025-07-20', '2023-07-21'],
+        temperature_2m_max: [80, 84, 86, 90],
+        temperature_2m_min: [60, 64, 62, 70],
+        precipitation_sum: [0, 2.5, 0, 0],
+      },
+    },
+  ];
+  const n = computeNormals(list, [10]);
+  assert.deepEqual(n[10]['07-20'], { hi: 83, lo: 62, wet: 33 }); // 1 of 3 days ≥1mm
+  assert.deepEqual(n[10]['07-21'], { hi: 90, lo: 70, wet: 0 });
+});
+
+test('typicalForStay averages normals over the stay, worst wet-day share', () => {
+  const normals = {
+    '07-20': { hi: 80, lo: 60, wet: 20 },
+    '07-21': { hi: 84, lo: 64, wet: 40 },
+    '07-22': { hi: 86, lo: 66, wet: 10 },
+  };
+  const ty = wxui.typicalForStay(normals, '2026-07-20', 2);
+  assert.deepEqual(ty, { hi: 83, lo: 63, wet: 40 });
+  assert.equal(wxui.typicalForStay(null, '2026-07-20', 2), null);
+  assert.equal(wxui.typicalForStay(normals, 'bad', 2), null);
 });
