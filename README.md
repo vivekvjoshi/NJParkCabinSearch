@@ -7,6 +7,8 @@ optional natural-language search. The official site only lets you check one park
 Built with **Next.js (App Router)**. No browser automation: everything is plain HTTP,
 so it runs anywhere Node runs — including small serverless functions.
 
+![NJ Park Site Finder — the weekend finder scanning all 18 parks at once, with live per-park status](docs/screenshot.png)
+
 ## Run locally
 
 ```bash
