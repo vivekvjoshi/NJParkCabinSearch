@@ -102,4 +102,4 @@ async function parseNlQuery(query) {
   return params;
 }
 
-module.exports = { parseNlQuery };
+module.exports = { parseNlQuery, extractJson };

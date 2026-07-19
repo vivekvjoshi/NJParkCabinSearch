@@ -304,6 +304,8 @@ function siteRow(apiSite, catalog, showerIds, showerAll) {
   const d = apiSite.SiteDetails;
   const cat = (catalog.sites || {})[String(d.SiteId)] || {};
   const toilets = cat.toilets || '';
+  const num = (v) =>
+    v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null;
   return {
     siteId: d.SiteId,
     shortName: d.ShortName || '',
@@ -311,6 +313,8 @@ function siteRow(apiSite, catalog, showerIds, showerAll) {
     types: (d.SiteTypes || []).map((t) => t.Name).join(', '),
     maxPeople: d.MaxPeople || 0,
     cost: formatCost(d),
+    costRes: num(d.ResidentCost),
+    costNonRes: num(d.NonResidentCost),
     area: cat.area || '',
     access: cat.access || '',
     toilets,
@@ -461,9 +465,19 @@ module.exports = {
   detailsUrl,
   todayISO,
   addDays,
+  isoToMDY,
+  dayOfWeek,
   weekendsInMonth,
   metaFromCatalogs,
   searchPark,
   recommendPark,
   runtimeDebug,
+  // pure internals exported for unit tests
+  nightFree,
+  formatCost,
+  parseCatalogHtml,
+  siteRow,
+  passesFilters,
+  sortRows,
+  parkTypeIds,
 };

@@ -1,104 +1,31 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { MON } from './lib/format.js';
+import { useParkSearch } from './lib/useParkSearch.js';
+import SearchControls from './components/SearchControls.js';
+import FilterRail from './components/FilterRail.js';
+import Results from './components/Results.js';
 
-const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const NL_EXAMPLES = [
+  'cabin for 4 with showers over a July weekend',
+  'tent site with electricity next Friday, 2 nights',
+  'lean-to anywhere in September',
+];
 
-function fmtDate(iso) {
-  const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return `${DOW[dt.getUTCDay()]} ${MON[m - 1]} ${d}`;
-}
+const STORAGE_KEY = 'njpf.filters';
 
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-
-const bookUrlFor = (id) => `https://www.njportal.com/DEP/NJOutdoors/Park/Details?locationId=${id}`;
-
-// all candidate weekends of a month for an arrival weekday; checkout is always Sunday
-function weekendTemplates(month, arrivalDow, today) {
-  const nights = { 4: 3, 5: 2, 6: 1 }[arrivalDow];
-  const [y, m] = month.split('-').map(Number);
-  const templates = [];
-  for (let day = 1; day <= 31; day++) {
-    const dt = new Date(Date.UTC(y, m - 1, day));
-    if (dt.getUTCMonth() !== m - 1) break;
-    if (dt.getUTCDay() !== arrivalDow) continue;
-    const iso = dt.toISOString().slice(0, 10);
-    if (iso < today) continue;
-    const co = new Date(Date.UTC(y, m - 1, day + nights));
-    templates.push({ arrival: iso, checkout: co.toISOString().slice(0, 10), nights });
-  }
-  return templates;
-}
-
-function toggled(set, id) {
-  const next = new Set(set);
-  next.has(id) ? next.delete(id) : next.add(id);
-  return next;
-}
-
-function Chip({ label, on, onClick }) {
-  return (
-    <button type="button" className={'chip' + (on ? ' on' : '')} onClick={onClick}>
-      {label}
-    </button>
-  );
-}
-
-function SiteRow({ s }) {
-  const meta = [s.area, s.access, s.maxPeople ? `max ${s.maxPeople} ppl` : '', s.cost]
-    .filter(Boolean)
-    .join(' · ');
-  return (
-    <div className="site-row">
-      <div className="site-main">
-        <div className="site-name">
-          {s.shortName || s.name}
-          {s.name && s.name !== s.shortName ? <span className="site-meta"> {s.name}</span> : null}
-        </div>
-        <div className="site-meta">{meta}</div>
-      </div>
-      <div className="badges">
-        {s.types ? <span className="badge">{s.types}</span> : null}
-        {s.flush ? <span className="badge badge-flush">🚽 Flush</span> : null}
-        {s.shower ? <span className="badge badge-shower">🚿 Shower</span> : null}
-      </div>
-    </div>
-  );
-}
-
-function ParkSection({ p, maxRows }) {
-  const shown = p.sites.slice(0, maxRows);
-  const more = p.sites.length - shown.length;
-  return (
-    <div className="park-section">
-      <div className="park-section-head">
-        <div className="park-section-title">
-          {p.park} · <span className="count">{plural(p.count, 'site')}</span>
-        </div>
-        <a className="link-book" href={p.bookUrl} target="_blank" rel="noopener noreferrer">
-          Book ↗
-        </a>
-      </div>
-      {shown.map((s) => (
-        <SiteRow key={s.siteId} s={s} />
-      ))}
-      {more > 0 ? <div className="more-note">…and {plural(more, 'more site')}</div> : null}
-    </div>
-  );
-}
-
-function MinStayHint() {
-  return (
-    <>
-      {' '}
-      Heads up: in peak season (mid-June–Labor&nbsp;Day),{' '}
-      <strong>cabins, lean-tos and shelters can only be booked 7 or 14 nights starting on a fixed weekday</strong>{' '}
-      that varies by park — short weekend stays are usually blocked. Try the <strong>Tent</strong> or{' '}
-      <strong>Trailer</strong> site types instead, or search a 7-night stay in Specific dates mode.
-    </>
-  );
+// This month + the next 6, as YYYY-MM options.
+function monthOptionsFrom(today) {
+  const [ty, tm] = today.split('-').map(Number);
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(Date.UTC(ty, tm - 1 + i, 1));
+    return {
+      value: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`,
+      label: `${MON[d.getUTCMonth()]} ${d.getUTCFullYear()}`,
+    };
+  });
 }
 
 export default function Home() {
@@ -117,20 +44,34 @@ export default function Home() {
   const [dateVal, setDateVal] = useState('');
   const [nights, setNights] = useState('2');
   const [minPeopleD, setMinPeopleD] = useState('0');
-
-  const [busy, setBusy] = useState(false);
-  const [showProgress, setShowProgress] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState('');
-  const [summary, setSummary] = useState(null); // {kind:'ok'|'empty'|'error', text?, prefix?, minStay?}
-  const [dateResults, setDateResults] = useState(null);
-  const [weekendResults, setWeekendResults] = useState(null);
+  const [sortPref, setSortPref] = useState('recommended');
 
   const [nlQuery, setNlQuery] = useState('');
   const [nlNote, setNlNote] = useState(null);
   const [nlBusy, setNlBusy] = useState(false);
 
-  const runRef = useRef(0);
+  const [theme, setTheme] = useState('light');
+  const [weather, setWeather] = useState(null); // { locationId: { iso: {hi,lo,precip,code} } }
+
+  const search = useParkSearch();
+  const initRef = useRef(false);
+
+  useEffect(() => {
+    // syncs with the inline pre-hydration theme script in layout.js
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    try {
+      localStorage.setItem('njpf.theme', next);
+    } catch {
+      /* private mode */
+    }
+  }
 
   useEffect(() => {
     fetch('/api/meta')
@@ -139,162 +80,118 @@ export default function Home() {
         setMeta(m);
         setParks(new Set(m.parks.map((p) => p.id))); // all parks on by default
         setDateVal(m.today);
+        setMonth(monthOptionsFrom(m.today)[0].value); // default to this month
       })
       .catch((err) => setBootError(String(err.message || err)));
   }, []);
 
-  const monthOptions = useMemo(() => {
-    if (!meta) return [];
-    const [ty, tm] = meta.today.split('-').map(Number);
-    return Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(Date.UTC(ty, tm - 1 + i, 1));
-      return {
-        value: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`,
-        label: `${MON[d.getUTCMonth()]} ${d.getUTCFullYear()}`,
-      };
-    });
+  // Fetch the 16-day forecast for all parks once meta is known (one request,
+  // server-cached 30 min). Optional: badges simply stay hidden if it fails.
+  useEffect(() => {
+    if (!meta) return;
+    fetch('/api/weather?parks=' + meta.parks.map((p) => p.id).join(','))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.days) setWeather(d.days);
+      })
+      .catch(() => {
+        /* weather is optional */
+      });
   }, [meta]);
 
+  const monthOptions = useMemo(() => (meta ? monthOptionsFrom(meta.today) : []), [meta]);
+
+  // Restore filters once meta is loaded: shared-link URL params win, then
+  // localStorage; run=1 in the URL re-executes the shared search.
   useEffect(() => {
-    if (monthOptions.length && !month) setMonth(monthOptions[0].value);
-  }, [monthOptions, month]);
+    if (!meta || initRef.current) return;
+    initRef.current = true;
 
-  const parkName = (id) => (meta?.parks.find((p) => p.id === id) || {}).name || `Park ${id}`;
-  const minStaySelected = (typeIds) =>
-    Boolean(meta && meta.minStayTypeIds.some((id) => typeIds.includes(id)));
-
-  function beginSearch() {
-    if (!parks.size) {
-      setSummary({ kind: 'error', text: 'Select at least one park in the left rail.' });
-      return null;
-    }
-    const run = ++runRef.current;
-    setBusy(true);
-    setShowProgress(true);
-    setProgress(0);
-    setStatus('Warming up…');
-    setSummary(null);
-    setDateResults(null);
-    setWeekendResults(null);
-    return run;
-  }
-
-  async function fetchPark(params) {
-    const resp = await fetch('/api/park?' + new URLSearchParams(params));
-    return resp.json();
-  }
-
-  async function runDateSearch(cfg) {
-    const run = beginSearch();
-    if (!run) return;
-    const results = [];
-    let availableCount = 0;
-    let parksWithSites = 0;
-    const started = Date.now();
-    for (let i = 0; i < cfg.parks.length; i++) {
-      if (runRef.current !== run) return;
-      const id = cfg.parks[i];
-      setProgress(Math.round((i / cfg.parks.length) * 100));
-      setStatus(`Checking ${parkName(id)}… (${i + 1} of ${cfg.parks.length} parks)`);
-      let r;
+    const sp = new URLSearchParams(window.location.search);
+    const fromUrl = sp.get('mode');
+    let saved = null;
+    if (!fromUrl) {
       try {
-        r = await fetchPark({
-          mode: 'search',
-          park: id,
-          date: cfg.date,
-          nights: cfg.nights,
-          types: cfg.types.join(','),
-          features: cfg.features.join(','),
-          flushOnly: cfg.flushOnly ? '1' : '0',
-          minPeople: cfg.minPeople,
-        });
-      } catch (err) {
-        r = { locationId: id, park: parkName(id), bookUrl: bookUrlFor(id), error: String(err.message || err), sites: [], totalMatching: 0 };
-      }
-      if (runRef.current !== run) return;
-      results.push(r);
-      availableCount += (r.sites || []).length;
-      if ((r.sites || []).length) parksWithSites++;
-      setDateResults([...results].sort((a, b) => (b.sites?.length || 0) - (a.sites?.length || 0)));
-    }
-    setProgress(100);
-    setStatus(`Done in ${((Date.now() - started) / 1000).toFixed(0)}s.`);
-    setSummary(
-      availableCount > 0
-        ? {
-            kind: 'ok',
-            text: `✅ ${plural(availableCount, 'site')} available across ${plural(parksWithSites, 'park')} for ${fmtDate(cfg.date)}, ${plural(+cfg.nights, 'night')}.`,
-          }
-        : { kind: 'empty', prefix: 'No available sites found for these dates and filters.', minStay: minStaySelected(cfg.types) }
-    );
-    setBusy(false);
-  }
-
-  async function runWeekendSearch(cfg) {
-    const run = beginSearch();
-    if (!run) return;
-    const merged = new Map(
-      weekendTemplates(cfg.month, parseInt(cfg.arrival, 10), meta.today).map((w) => [
-        w.arrival,
-        { ...w, totalSites: 0, parks: [] },
-      ])
-    );
-    const started = Date.now();
-    const notes = [];
-    for (let i = 0; i < cfg.parks.length; i++) {
-      if (runRef.current !== run) return;
-      const id = cfg.parks[i];
-      setProgress(Math.round((i / cfg.parks.length) * 100));
-      setStatus(`Checking ${parkName(id)}… (${i + 1} of ${cfg.parks.length} parks)`);
-      try {
-        const r = await fetchPark({
-          mode: 'recommend',
-          park: id,
-          month: cfg.month,
-          arrival: cfg.arrival,
-          types: cfg.types.join(','),
-          features: cfg.features.join(','),
-          flushOnly: cfg.flushOnly ? '1' : '0',
-          minPeople: cfg.minPeople,
-        });
-        if (r.error) throw new Error(r.error);
-        let parkTotal = 0;
-        for (const [iso, w] of Object.entries(r.weekends || {})) {
-          const bucket = merged.get(iso);
-          if (!bucket || !w.sites.length) continue;
-          bucket.totalSites += w.sites.length;
-          bucket.parks.push({ locationId: id, park: r.park, bookUrl: r.bookUrl, count: w.sites.length, sites: w.sites });
-          parkTotal += w.sites.length;
-        }
-        notes.push(`${r.park}: ${parkTotal}`);
-        setStatus(`Latest — ${notes.slice(-3).join(' · ')} site-weekends`);
-      } catch (err) {
-        notes.push(`${parkName(id)}: error`);
+        saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+      } catch {
+        saved = null;
       }
     }
-    if (runRef.current !== run) return;
-    const weekends = [...merged.values()].sort((a, b) => a.arrival.localeCompare(b.arrival));
-    for (const w of weekends) w.parks.sort((a, b) => b.count - a.count);
-    setProgress(100);
-    setStatus(`Done in ${((Date.now() - started) / 1000).toFixed(0)}s.`);
-    setWeekendResults(weekends);
-    const best = weekends.length ? weekends.reduce((a, b) => (b.totalSites > a.totalSites ? b : a)) : null;
-    setSummary(
-      best && best.totalSites > 0
-        ? {
-            kind: 'ok',
-            best,
-          }
-        : {
-            kind: 'empty',
-            prefix: weekends.length
-              ? 'No weekend availability found for these filters.'
-              : 'No upcoming weekends left in that month.',
-            minStay: minStaySelected(cfg.types),
-          }
-    );
-    setBusy(false);
-  }
+    const src = fromUrl ? Object.fromEntries(sp) : saved;
+    if (!src) return;
+
+    const csv = (v) =>
+      String(v || '')
+        .split(',')
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => Number.isInteger(n));
+    const validParks = new Set(meta.parks.map((p) => p.id));
+    const validTypes = new Set(meta.types.map((t) => t.id));
+    const validFeatures = new Set(meta.features.map((f) => f.id));
+
+    const srcTypes = csv(src.types).filter((t) => validTypes.has(t));
+    if (srcTypes.length) setTypes(new Set(srcTypes));
+    setFeatures(new Set(csv(src.features).filter((f) => validFeatures.has(f))));
+    if (src.flush === '0' || src.flushOnly === false) setFlushOnly(false);
+    if (src.parks) setParks(new Set(csv(src.parks).filter((p) => validParks.has(p))));
+    const srcMode = src.mode === 'date' ? 'date' : 'weekend';
+    setMode(srcMode);
+    const srcArrival = ['4', '5', '6'].includes(String(src.arrival)) ? String(src.arrival) : '5';
+    setArrival(srcArrival);
+    const srcNights = String(Math.min(14, Math.max(1, parseInt(src.nights, 10) || 2)));
+    setNights(srcNights);
+    const srcMin = String(Math.max(0, parseInt(src.minPeople, 10) || 0));
+    setMinPeopleW(srcMin);
+    setMinPeopleD(srcMin);
+    const srcMonth = monthOptions.some((o) => o.value === src.month) ? src.month : monthOptions[0]?.value;
+    if (srcMonth) setMonth(srcMonth);
+    const srcDate =
+      /^\d{4}-\d{2}-\d{2}$/.test(src.date || '') && src.date >= meta.today ? src.date : meta.today;
+    setDateVal(srcDate);
+
+    if (fromUrl && sp.get('run') === '1') {
+      const parkIds = src.parks
+        ? csv(src.parks).filter((p) => validParks.has(p))
+        : meta.parks.map((p) => p.id);
+      if (!parkIds.length) return;
+      const cfg = {
+        parks: parkIds,
+        types: srcTypes.length ? srcTypes : [1],
+        features: csv(src.features).filter((f) => validFeatures.has(f)),
+        flushOnly: src.flush !== '0',
+        minPeople: srcMin,
+      };
+      if (srcMode === 'date') {
+        search.runDateSearch({ ...cfg, date: srcDate, nights: srcNights }, meta);
+      } else if (srcMonth) {
+        search.runWeekendSearch({ ...cfg, month: srcMonth, arrival: srcArrival }, meta);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta, monthOptions]);
+
+  // Persist filters for returning visitors (URL params take precedence on load).
+  useEffect(() => {
+    if (!initRef.current) return;
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          mode,
+          types: [...types],
+          features: [...features],
+          flushOnly,
+          parks: [...parks],
+          arrival,
+          nights,
+          month,
+          minPeople: mode === 'weekend' ? minPeopleW : minPeopleD,
+        })
+      );
+    } catch {
+      /* storage unavailable */
+    }
+  }, [mode, types, features, flushOnly, parks, arrival, nights, month, minPeopleW, minPeopleD]);
 
   const cfgFromState = () => ({
     parks: [...parks],
@@ -303,10 +200,40 @@ export default function Home() {
     flushOnly,
   });
 
-  const searchWeekend = () =>
-    runWeekendSearch({ ...cfgFromState(), month, arrival, minPeople: minPeopleW || '0' });
-  const searchDate = () =>
-    runDateSearch({ ...cfgFromState(), date: dateVal, nights, minPeople: minPeopleD || '0' });
+  // Reflect the current search in the URL so it's shareable; run=1 auto-runs
+  // the search for whoever opens the link.
+  function syncUrl(cfg) {
+    const sp = new URLSearchParams();
+    sp.set('mode', cfg.mode);
+    if (cfg.mode === 'weekend') {
+      sp.set('month', cfg.month);
+      sp.set('arrival', String(cfg.arrival));
+    } else {
+      sp.set('date', cfg.date);
+      sp.set('nights', String(cfg.nights));
+    }
+    sp.set('types', cfg.types.join(','));
+    if (cfg.features.length) sp.set('features', cfg.features.join(','));
+    if (!cfg.flushOnly) sp.set('flush', '0');
+    if (cfg.minPeople && cfg.minPeople !== '0') sp.set('minPeople', cfg.minPeople);
+    if (meta && cfg.parks.length !== meta.parks.length) sp.set('parks', cfg.parks.join(','));
+    sp.set('run', '1');
+    window.history.replaceState(null, '', '?' + sp.toString());
+  }
+
+  const searchWeekend = () => {
+    const cfg = { ...cfgFromState(), mode: 'weekend', month, arrival, minPeople: minPeopleW || '0' };
+    setNlNote(null);
+    syncUrl(cfg);
+    search.runWeekendSearch(cfg, meta);
+  };
+
+  const searchDate = () => {
+    const cfg = { ...cfgFromState(), mode: 'date', date: dateVal, nights, minPeople: minPeopleD || '0' };
+    setNlNote(null);
+    syncUrl(cfg);
+    search.runDateSearch(cfg, meta);
+  };
 
   async function runNl() {
     const query = nlQuery.trim();
@@ -344,13 +271,17 @@ export default function Home() {
         setDateVal(date);
         setNights(String(p.nights || 2));
         setMinPeopleD(String(p.minPeople || 0));
-        runDateSearch({ ...cfg, date, nights: String(p.nights || 2) });
+        const full = { ...cfg, mode: 'date', date, nights: String(p.nights || 2) };
+        syncUrl(full);
+        search.runDateSearch(full, meta);
       } else {
         const m = p.month && monthOptions.some((o) => o.value === p.month) ? p.month : month;
         setMonth(m);
         setArrival(String(p.arrival || 5));
         setMinPeopleW(String(p.minPeople || 0));
-        runWeekendSearch({ ...cfg, month: m, arrival: String(p.arrival || 5) });
+        const full = { ...cfg, mode: 'weekend', month: m, arrival: String(p.arrival || 5) };
+        syncUrl(full);
+        search.runWeekendSearch(full, meta);
       }
     } catch (err) {
       setNlNote(`⚠️ ${err.message}`);
@@ -360,17 +291,27 @@ export default function Home() {
   }
 
   const showMinStayBanner = meta && meta.minStayTypeIds.some((id) => types.has(id));
-  const hasResults = dateResults !== null || weekendResults !== null || summary !== null;
+  const hasResults =
+    search.dateResults !== null || search.weekendResults !== null || search.summary !== null;
 
   return (
     <>
       <nav className="topnav">
         <div className="nav-inner">
-          <a className="brand" href="/">
+          <Link className="brand" href="/">
             <span className="brand-mark">⛺</span>
             <span className="brand-name">NJ&nbsp;Park&nbsp;Site&nbsp;Finder</span>
-          </a>
+          </Link>
           <div className="nav-links">
+            <button
+              type="button"
+              className="btn-icon"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            >
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
             <a href="https://www.njportal.com/DEP/NJOutdoors" target="_blank" rel="noopener noreferrer">
               njportal.com ↗
             </a>
@@ -404,310 +345,86 @@ export default function Home() {
               {nlBusy ? 'Thinking…' : 'Ask'}
             </button>
           </div>
+          <div className="nl-examples">
+            {NL_EXAMPLES.map((ex) => (
+              <button key={ex} type="button" className="nl-example" onClick={() => setNlQuery(ex)}>
+                {ex}
+              </button>
+            ))}
+          </div>
           {nlNote ? <div className="nl-note">{nlNote}</div> : null}
 
-          <div className="mode-tabs" role="tablist">
-            <button
-              className={'mode-tab' + (mode === 'weekend' ? ' active' : '')}
-              role="tab"
-              aria-selected={mode === 'weekend'}
-              onClick={() => setMode('weekend')}
-            >
-              🗓️ Weekend finder
-            </button>
-            <button
-              className={'mode-tab' + (mode === 'date' ? ' active' : '')}
-              role="tab"
-              aria-selected={mode === 'date'}
-              onClick={() => setMode('date')}
-            >
-              📅 Specific dates
-            </button>
-          </div>
-
-          {mode === 'weekend' ? (
-            <div className="search-bar">
-              <label className="field">
-                <span className="field-label">Month</span>
-                <select value={month} onChange={(e) => setMonth(e.target.value)}>
-                  {monthOptions.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Weekend</span>
-                <select value={arrival} onChange={(e) => setArrival(e.target.value)}>
-                  <option value="5">Fri → Sun · 2 nights</option>
-                  <option value="6">Sat → Sun · 1 night</option>
-                  <option value="4">Thu → Sun · 3 nights</option>
-                </select>
-              </label>
-              <label className="field">
-                <span className="field-label">Party size</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="30"
-                  title="0 = any size"
-                  value={minPeopleW}
-                  onChange={(e) => setMinPeopleW(e.target.value)}
-                />
-              </label>
-              <button className="btn-search" type="button" onClick={searchWeekend} disabled={busy}>
-                {busy ? 'Searching…' : 'Search'}
-              </button>
-            </div>
-          ) : (
-            <div className="search-bar">
-              <label className="field">
-                <span className="field-label">Arrival</span>
-                <input
-                  type="date"
-                  min={meta?.today}
-                  value={dateVal}
-                  onChange={(e) => setDateVal(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">Nights</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="14"
-                  value={nights}
-                  onChange={(e) => setNights(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">Party size</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="30"
-                  title="0 = any size"
-                  value={minPeopleD}
-                  onChange={(e) => setMinPeopleD(e.target.value)}
-                />
-              </label>
-              <button className="btn-search" type="button" onClick={searchDate} disabled={busy}>
-                {busy ? 'Searching…' : 'Search'}
-              </button>
-            </div>
-          )}
-
-          <div className="type-row">
-            <span className="row-label">Stay in</span>
-            <div className="chips">
-              {meta?.types.map((t) => (
-                <Chip key={t.id} label={t.name} on={types.has(t.id)} onClick={() => setTypes(toggled(types, t.id))} />
-              ))}
-            </div>
-          </div>
-
-          {showMinStayBanner ? (
-            <div className="banner banner-warn">
-              ⚠️ <strong>Peak-season rule:</strong> mid-June through Labor Day, cabins, lean-tos and
-              shelters can only be booked for <strong>7 or 14 nights starting on a fixed weekday</strong>{' '}
-              that varies by park (usually Saturday). Weekend results for these types may be empty —
-              confirm the arrival-day rule at checkout.
-            </div>
-          ) : null}
+          <SearchControls
+            meta={meta}
+            mode={mode}
+            setMode={setMode}
+            month={month}
+            setMonth={setMonth}
+            monthOptions={monthOptions}
+            arrival={arrival}
+            setArrival={setArrival}
+            minPeopleW={minPeopleW}
+            setMinPeopleW={setMinPeopleW}
+            dateVal={dateVal}
+            setDateVal={setDateVal}
+            nights={nights}
+            setNights={setNights}
+            minPeopleD={minPeopleD}
+            setMinPeopleD={setMinPeopleD}
+            busy={search.busy}
+            types={types}
+            setTypes={setTypes}
+            showMinStayBanner={showMinStayBanner}
+            onSearchWeekend={searchWeekend}
+            onSearchDate={searchDate}
+          />
         </div>
       </header>
 
       <main className="container layout">
-        <aside className="rail">
-          <section className="rail-card">
-            <div className="rail-head">
-              <h3>Parks</h3>
-              <span className="mini-links">
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setParks(new Set(meta.parks.map((p) => p.id)));
-                  }}
-                >
-                  all
-                </a>{' '}
-                ·{' '}
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setParks(new Set());
-                  }}
-                >
-                  none
-                </a>
-              </span>
-            </div>
-            <div className="chips chips-wrap">
-              {meta?.parks.map((p) => (
-                <Chip key={p.id} label={p.name} on={parks.has(p.id)} onClick={() => setParks(toggled(parks, p.id))} />
-              ))}
-            </div>
-          </section>
-
-          <section className="rail-card">
-            <div className="rail-head">
-              <h3>Comfort</h3>
-            </div>
-            <div className="chips chips-wrap">
-              <Chip label="🚽 Flush toilets" on={flushOnly} onClick={() => setFlushOnly(!flushOnly)} />
-              {meta ? (
-                <Chip
-                  label="🚿 Showers"
-                  on={features.has(meta.showerFeatureId)}
-                  onClick={() => setFeatures(toggled(features, meta.showerFeatureId))}
-                />
-              ) : null}
-            </div>
-          </section>
-
-          <section className="rail-card">
-            <div className="rail-head">
-              <h3>Features</h3>
-            </div>
-            <div className="chips chips-wrap">
-              {meta?.features
-                .filter((f) => f.id !== meta.showerFeatureId)
-                .map((f) => (
-                  <Chip key={f.id} label={f.name} on={features.has(f.id)} onClick={() => setFeatures(toggled(features, f.id))} />
-                ))}
-            </div>
-          </section>
-        </aside>
-
-        <section className="results-col">
-          {showProgress ? (
-            <div className="progress-wrap">
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${progress}%` }} />
-              </div>
-              <div className="status-line">{status}</div>
-            </div>
-          ) : null}
-
-          {bootError ? <div className="banner banner-error">Failed to load app metadata: {bootError}</div> : null}
-
-          {summary?.kind === 'ok' && summary.best ? (
-            <div className="banner banner-summary">
-              🏆 Best weekend:{' '}
-              <strong>
-                {fmtDate(summary.best.arrival)} → {fmtDate(summary.best.checkout)}
-              </strong>{' '}
-              with {plural(summary.best.totalSites, 'available site')} across {plural(summary.best.parks.length, 'park')}.
-            </div>
-          ) : null}
-          {summary?.kind === 'ok' && summary.text ? (
-            <div className="banner banner-summary">{summary.text}</div>
-          ) : null}
-          {summary?.kind === 'empty' ? (
-            <div className="banner banner-error">
-              {summary.prefix}
-              {summary.minStay ? <MinStayHint /> : null}
-            </div>
-          ) : null}
-          {summary?.kind === 'error' ? <div className="banner banner-error">{summary.text}</div> : null}
-
-          {weekendResults
-            ? weekendResults.map((w) => {
-                const head = `🗓️ ${fmtDate(w.arrival)} → ${fmtDate(w.checkout)} · ${plural(w.nights, 'night')} · ${plural(w.totalSites, 'site')}`;
-                return w.totalSites ? (
-                  <div className="card" key={w.arrival}>
-                    <div className="card-head">
-                      <div className="card-title">
-                        {head} across {plural(w.parks.length, 'park')}
-                      </div>
-                    </div>
-                    {w.parks.map((p) => (
-                      <ParkSection key={p.locationId} p={p} maxRows={4} />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="card card-muted" key={w.arrival}>
-                    <div className="card-head">
-                      <div className="card-title">{head} — nothing available</div>
-                    </div>
-                  </div>
-                );
-              })
-            : null}
-
-          {dateResults
-            ? dateResults.map((r) => {
-                if (r.error) {
-                  return (
-                    <div className="card card-muted" key={r.locationId}>
-                      <div className="card-head">
-                        <div className="card-title">
-                          ⚠️ {r.park} — couldn’t be checked ({r.error})
-                        </div>
-                      </div>
-                    </div>
-                  );
-                }
-                if (r.skipped) {
-                  return (
-                    <div className="card card-muted" key={r.locationId}>
-                      <div className="card-head">
-                        <div className="card-title">{r.park} — doesn’t offer the selected site types</div>
-                      </div>
-                    </div>
-                  );
-                }
-                const shown = r.sites.slice(0, 8);
-                const more = r.sites.length - shown.length;
-                return (
-                  <div className="card" key={r.locationId}>
-                    <div className="card-head">
-                      <div>
-                        <div className="card-title">{r.park}</div>
-                        <div className="card-sub">
-                          {r.sites.length} of {plural(r.totalMatching, 'matching site')} available
-                        </div>
-                      </div>
-                      <a className="btn-book" href={r.bookUrl} target="_blank" rel="noopener noreferrer">
-                        Book ↗
-                      </a>
-                    </div>
-                    {shown.length ? (
-                      <div className="park-section">
-                        {shown.map((s) => (
-                          <SiteRow key={s.siteId} s={s} />
-                        ))}
-                        {more > 0 ? <div className="more-note">…and {plural(more, 'more site')}</div> : null}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })
-            : null}
-
-          {!hasResults && !bootError ? (
-            <div className="empty-state">
-              <div className="empty-art">🏕️</div>
-              <h2>Ready when you are</h2>
-              <p>
-                Pick a month and hit <strong>Search</strong> to scan every weekend across the parks
-                you’ve selected — or ask in plain English above.
-              </p>
-            </div>
-          ) : null}
-        </section>
+        <FilterRail
+          meta={meta}
+          parks={parks}
+          setParks={setParks}
+          flushOnly={flushOnly}
+          setFlushOnly={setFlushOnly}
+          features={features}
+          setFeatures={setFeatures}
+        />
+        <Results
+          meta={meta}
+          onQuickStart={searchWeekend}
+          showProgress={search.showProgress}
+          progress={search.progress}
+          status={search.status}
+          busy={search.busy}
+          onCancel={search.cancel}
+          bootError={bootError}
+          summary={search.summary}
+          weekendResults={search.weekendResults}
+          dateResults={search.dateResults}
+          nightsUsed={search.nightsUsed}
+          dateUsed={search.dateUsed}
+          checkedAt={search.checkedAt}
+          parkStates={search.parkStates}
+          weather={weather}
+          hasResults={hasResults}
+          sortPref={sortPref}
+          setSortPref={setSortPref}
+        />
       </main>
 
       <footer className="footer">
         <div className="container">
           Availability is scraped live from njportal.com and can change at any moment — always
-          confirm on the official booking page before planning your trip. NJ Park Site Finder is not
-          affiliated with the State of New Jersey.
+          confirm on the official booking page before planning your trip. Weather data by{' '}
+          <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">
+            Open-Meteo.com
+          </a>
+          . NJ Park Site Finder is not affiliated with the State of New Jersey.
         </div>
       </footer>
     </>
   );
 }
+
